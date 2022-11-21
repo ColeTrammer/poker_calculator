@@ -1,3 +1,5 @@
+#![allow(clippy::no_effect_underscore_binding)]
+
 use rocket_cors::{AllowedHeaders, AllowedOrigins};
 
 #[macro_use]

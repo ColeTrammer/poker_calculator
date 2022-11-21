@@ -2,6 +2,7 @@
 //  - it's useful when you want to check your code with `cargo make verify`
 // but some rules are too "annoying" or are not applicable for your case.)
 #![allow(clippy::wildcard_imports)]
+#![allow(clippy::future_not_send)]
 
 use seed::{prelude::*, *};
 
@@ -68,7 +69,7 @@ fn view(model: &Model) -> Node<Msg> {
         "This is a counter: ",
         C!["counter"],
         button![model.counter, ev(Ev::Click, |_| Msg::Increment),],
-        p![model.text.clone()]
+        p![format!("Server text: {}", model.text)]
     ]
 }
 

@@ -1,0 +1,13 @@
+# --- BASIC ---
+
+[tasks.watch]
+description = "Watch files and rerun the server on change"
+run_task = [
+    { name = "serve" },
+]
+watch = true
+
+[tasks.serve]
+description = "Start server"
+command = "cargo"
+args = [ "run" ]
