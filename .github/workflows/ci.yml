@@ -1,0 +1,18 @@
+on: [push]
+name: CI
+jobs:
+  build_and_test:
+    name: Poker Calculator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          target: wasm32-unknown-unknown
+          profile: minimal
+      - uses: jetli/wasm-pack-action@v0.3.0
+      - uses: davidB/rust-cargo-make@v1
+      - name: Run CI Checks
+        run: cargo make verify

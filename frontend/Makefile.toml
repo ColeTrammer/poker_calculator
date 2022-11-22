@@ -20,10 +20,6 @@ install_crate = { crate_name = "microserver", binary = "microserver", test_arg =
 command = "microserver"
 args = ["--port", "${PORT}"]
 
-[tasks.verify]
-description = "Format, lint with Clippy and run tests"
-dependencies = ["fmt", "clippy", "test"]
-
 # ---- BUILD ----
 
 [tasks.build]

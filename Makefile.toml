@@ -21,4 +21,8 @@ args = ["clippy", "--all-features", "--", "--deny", "warnings", "--deny", "clipp
 description = "Format with rustfmt"
 install_crate = { rustup_component_name = "rustfmt", binary = "rustfmt", test_arg = "-V" }
 command = "cargo"
-args = ["fmt"]
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.verify]
+description = "Format, lint with Clippy and run tests"
+dependencies = ["fmt", "clippy", "test"]
