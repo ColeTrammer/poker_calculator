@@ -1,4 +1,4 @@
-# Poker Calculator
+# Poker Calculator [![CI](https://github.com/ColeTrammer/poker_calculator/actions/workflows/ci.yml/badge.svg)](https://github.com/ColeTrammer/poker_calculator/actions/workflows/ci.yml)
 
 ## Running locally
 
