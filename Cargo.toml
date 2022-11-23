@@ -6,3 +6,6 @@ edition = "2021"
 
 [workspace]
 members = ["backend", "frontend"]
+
+[dependencies]
+itertools = "0.10.5"

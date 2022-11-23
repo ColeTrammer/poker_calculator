@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +90,7 @@ impl Number {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Card {
     value: u8,
 }
@@ -151,10 +152,10 @@ impl HandEvaluation {
     }
 
     #[must_use]
-    pub const fn new_four_of_a_kind(high_card: Number) -> Self {
+    pub const fn new_four_of_a_kind(high_card: Number, kicker: Number) -> Self {
         Self {
             kind: HandKind::FourOfAKind,
-            values: [high_card as u8, 0, 0],
+            values: [high_card as u8, kicker as u8, 0],
         }
     }
 
@@ -167,10 +168,10 @@ impl HandEvaluation {
     }
 
     #[must_use]
-    pub const fn new_flush(high_card: Number) -> Self {
+    pub const fn new_flush(cards: u16) -> Self {
         Self {
             kind: HandKind::Flush,
-            values: [high_card as u8, 0, 0],
+            values: [(cards >> 8) as u8, (cards & 0xFF) as u8, 0],
         }
     }
 
@@ -183,10 +184,14 @@ impl HandEvaluation {
     }
 
     #[must_use]
-    pub const fn new_three_of_a_kind(high_card: Number) -> Self {
+    pub const fn new_three_of_a_kind(high_card: Number, kickers: u16) -> Self {
         Self {
             kind: HandKind::ThreeOfAKind,
-            values: [high_card as u8, 0, 0],
+            values: [
+                high_card as u8,
+                (kickers >> 8) as u8,
+                (kickers & 0xFF) as u8,
+            ],
         }
     }
 
@@ -292,9 +297,9 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     // Check for four of a kind.
     for number in (Number::Two as u8..=Number::Ace as u8).rev() {
         if count_by_number[number as usize] == 4 {
-            unsafe {
-                return HandEvaluation::new_four_of_a_kind(Number::from_u8_unchecked(number));
-            }
+            let high_card = unsafe { Number::from_u8_unchecked(number) };
+            let kicker = highest_card_in_set(number_bitset & !high_card.as_bit());
+            return HandEvaluation::new_four_of_a_kind(high_card, kicker);
         }
     }
 
@@ -316,8 +321,12 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     // Check for flush.
     for suit in 0..4 {
         if count_by_suit[suit] >= 5 {
-            let high_card = highest_card_in_set(number_by_suit_bitset[suit]);
-            return HandEvaluation::new_flush(high_card);
+            let mut suited_cards = number_by_suit_bitset[suit];
+            while count_by_suit[suit] > 5 {
+                suited_cards &= suited_cards - 1;
+                count_by_suit[suit] -= 1;
+            }
+            return HandEvaluation::new_flush(suited_cards);
         }
     }
 
@@ -328,7 +337,11 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
 
     // Check for three of a kind.
     if let Some(high_card) = three_of_a_kind {
-        return HandEvaluation::new_three_of_a_kind(high_card);
+        let mut kickers = number_bitset;
+        kickers &= !high_card.as_bit();
+        kickers &= kickers - 1;
+        kickers &= kickers - 1;
+        return HandEvaluation::new_three_of_a_kind(high_card, kickers);
     }
 
     // Check for two pair and pair.
@@ -361,6 +374,51 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     five_highest_cards &= five_highest_cards - 1;
     five_highest_cards &= five_highest_cards - 1;
     HandEvaluation::new_high_card(five_highest_cards)
+}
+
+pub struct ComputeResult {
+    pub win_count: u64,
+    pub loss_count: u64,
+    pub tie_count: u64,
+    pub count: u64,
+}
+
+pub fn compute_result(hand1: [Card; 2], hand2: [Card; 2]) -> ComputeResult {
+    let mut deck = vec![];
+    for suit in 0..4 {
+        for number in Number::Two as u8..=Number::Ace as u8 {
+            let card = Card::new(Suit::from_u8(suit), Number::from_u8(number));
+            if card != hand1[0] && card != hand1[1] && card != hand2[0] && card != hand2[1] {
+                deck.push(card);
+            }
+        }
+    }
+
+    let mut tie_count = 0;
+    let mut win_count = 0;
+    let mut loss_count = 0;
+    let mut count = 0;
+
+    for (c1, c2, c3, c4, c5) in deck.into_iter().tuple_combinations() {
+        let hand_a = [c1, c2, c3, c4, c5, hand1[0], hand1[1]];
+        let hand_b = [c1, c2, c3, c4, c5, hand2[0], hand2[1]];
+
+        let a_result = evaluate_hand(hand_a);
+        let b_result = evaluate_hand(hand_b);
+        match a_result.cmp(&b_result) {
+            std::cmp::Ordering::Equal => tie_count += 1,
+            std::cmp::Ordering::Greater => win_count += 1,
+            std::cmp::Ordering::Less => loss_count += 1,
+        }
+        count += 1;
+    }
+
+    ComputeResult {
+        win_count,
+        loss_count,
+        tie_count,
+        count,
+    }
 }
 
 #[cfg(test)]
@@ -468,8 +526,8 @@ mod tests {
             Card::new(Suit::Clubs, Number::Queen),
             Card::new(Suit::Clubs, Number::Jack),
             Card::new(Suit::Clubs, Number::Nine),
-            Card::new(Suit::Hearts, Number::Eight),
-            Card::new(Suit::Hearts, Number::Five),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Clubs, Number::Five),
         ];
 
         let king_high_flush = [
@@ -478,8 +536,8 @@ mod tests {
             Card::new(Suit::Clubs, Number::Jack),
             Card::new(Suit::Clubs, Number::Nine),
             Card::new(Suit::Clubs, Number::Eight),
-            Card::new(Suit::Hearts, Number::Eight),
-            Card::new(Suit::Hearts, Number::Five),
+            Card::new(Suit::Diamonds, Number::Eight),
+            Card::new(Suit::Clubs, Number::Five),
         ];
 
         let straight = [
@@ -579,16 +637,41 @@ mod tests {
         ];
 
         assert!(evaluate_hand(royal_flush) == HandEvaluation::new_straight_flush(Number::Ace));
-        assert!(evaluate_hand(four_of_a_kind) == HandEvaluation::new_four_of_a_kind(Number::Ten));
+        assert!(
+            evaluate_hand(four_of_a_kind)
+                == HandEvaluation::new_four_of_a_kind(Number::Ten, Number::Ace)
+        );
         assert!(
             evaluate_hand(full_house)
                 == HandEvaluation::new_full_house(Number::Eight, Number::King)
         );
-        assert!(evaluate_hand(ace_high_flush) == HandEvaluation::new_flush(Number::Ace));
-        assert!(evaluate_hand(king_high_flush) == HandEvaluation::new_flush(Number::King));
+        assert!(
+            evaluate_hand(ace_high_flush)
+                == HandEvaluation::new_flush(
+                    Number::Ace.as_bit()
+                        | Number::King.as_bit()
+                        | Number::Queen.as_bit()
+                        | Number::Jack.as_bit()
+                        | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(king_high_flush)
+                == HandEvaluation::new_flush(
+                    Number::King.as_bit()
+                        | Number::Queen.as_bit()
+                        | Number::Jack.as_bit()
+                        | Number::Nine.as_bit()
+                        | Number::Eight.as_bit()
+                )
+        );
         assert!(evaluate_hand(straight) == HandEvaluation::new_straight(Number::Ace));
         assert!(
-            evaluate_hand(three_of_a_kind) == HandEvaluation::new_three_of_a_kind(Number::Eight)
+            evaluate_hand(three_of_a_kind)
+                == HandEvaluation::new_three_of_a_kind(
+                    Number::Eight,
+                    Number::Ace.as_bit() | Number::King.as_bit()
+                )
         );
         assert!(
             evaluate_hand(ace_pair)
