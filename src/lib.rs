@@ -383,6 +383,7 @@ pub struct ComputeResult {
     pub count: u64,
 }
 
+#[must_use]
 pub fn compute_result(hand1: [Card; 2], hand2: [Card; 2]) -> ComputeResult {
     let mut deck = vec![];
     for suit in 0..4 {

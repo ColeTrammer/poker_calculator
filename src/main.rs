@@ -1,4 +1,4 @@
-use poker_calculator::*;
+use poker_calculator::{compute_result, Card, ComputeResult, Number, Suit};
 
 fn main() {
     let ComputeResult {
@@ -17,11 +17,18 @@ fn main() {
         ],
     );
 
+    #[allow(clippy::cast_precision_loss)]
+    let win_percent = win_count as f64 / count as f64 * 100.;
+
+    #[allow(clippy::cast_precision_loss)]
+    let loss_percent = loss_count as f64 / count as f64 * 100.;
+
+    #[allow(clippy::cast_precision_loss)]
+    let tie_percent = tie_count as f64 / count as f64 * 100.;
+
     println!(
         "Win: {:.2}\nLose: {:.2}\nTie: {:.2}\n",
-        win_count as f64 / count as f64 * 100.,
-        loss_count as f64 / count as f64 * 100.,
-        tie_count as f64 / count as f64 * 100.
+        win_percent, loss_percent, tie_percent
     );
 
     println!(
