@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Suit {
     Hearts = 0,
@@ -23,9 +23,17 @@ impl Suit {
             _ => panic!("Invalid suite number: {}", value),
         }
     }
+
+    /// # Safety
+    ///
+    /// This must be called with value in the range [0, 3]
+    #[must_use]
+    pub unsafe fn from_u8_unchecked(value: u8) -> Self {
+        std::mem::transmute(value)
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Number {
     Two = 2,
@@ -46,7 +54,7 @@ pub enum Number {
 impl Number {
     /// # Panics
     ///
-    /// Will panic if value is in the interval [2, 14]
+    /// Will panic if value is not in the interval [2, 14]
     #[must_use]
     pub fn from_u8(value: u8) -> Self {
         match value {
@@ -65,6 +73,14 @@ impl Number {
             14 => Self::Ace,
             _ => panic!("Invalid card number: {}", value),
         }
+    }
+
+    /// # Safety
+    ///
+    /// This must be called with value in the range [2, 14]
+    #[must_use]
+    pub unsafe fn from_u8_unchecked(value: u8) -> Self {
+        std::mem::transmute(value)
     }
 
     #[must_use]
@@ -87,12 +103,12 @@ impl Card {
 
     #[must_use]
     pub fn number(self) -> Number {
-        Number::from_u8(self.value & 0xF)
+        unsafe { Number::from_u8_unchecked(self.value & 0xF) }
     }
 
     #[must_use]
     pub fn suit(self) -> Suit {
-        Suit::from_u8(self.value >> 4)
+        unsafe { Suit::from_u8_unchecked(self.value >> 4) }
     }
 }
 
@@ -203,6 +219,150 @@ impl HandEvaluation {
     }
 }
 
+#[must_use]
+fn check_for_straight(mut card_bitset: u16) -> Option<Number> {
+    // Duplicate the ace at the bottom of the bitset, if it is present.
+    if card_bitset & Number::Ace.as_bit() != 0 {
+        card_bitset |= 2;
+    }
+
+    // Check for straights by using 5 bit windows, and seeing if all bits
+    // in the mask are present.
+    let mask = 0b11111;
+    for shift_index in (1..11).rev() {
+        if (card_bitset & (mask << shift_index)) >> shift_index == mask {
+            unsafe {
+                return Some(Number::from_u8_unchecked(shift_index + 4));
+            }
+        }
+    }
+    None
+}
+
+#[must_use]
+fn check_for_three_of_a_kind(count_by_number: &[i32; 15]) -> Option<Number> {
+    for number in (Number::Two as u8..=Number::Ace as u8).rev() {
+        if count_by_number[number as usize] == 3 {
+            unsafe { return Some(Number::from_u8_unchecked(number)) }
+        }
+    }
+    None
+}
+
+#[must_use]
+fn check_for_pair(count_by_number: &[i32; 15]) -> Option<Number> {
+    for number in (Number::Two as u8..=Number::Ace as u8).rev() {
+        if count_by_number[number as usize] == 2 {
+            unsafe { return Some(Number::from_u8_unchecked(number)) }
+        }
+    }
+    None
+}
+
+#[must_use]
+fn highest_card_in_set(cards: u16) -> Number {
+    #[allow(clippy::cast_possible_truncation)]
+    unsafe {
+        Number::from_u8_unchecked((15 - cards.leading_zeros()) as u8)
+    }
+}
+
+#[must_use]
+pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
+    let mut count_by_suit = [0, 0, 0, 0];
+    let mut count_by_number = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut number_bitset: u16 = 0;
+    let mut number_by_suit_bitset: [u16; 4] = [0, 0, 0, 0];
+
+    for card in cards {
+        let (suit, number) = (card.suit(), card.number());
+        count_by_suit[suit as usize] += 1;
+        count_by_number[number as usize] += 1;
+        number_bitset |= card.number().as_bit();
+        number_by_suit_bitset[suit as usize] |= card.number().as_bit();
+    }
+
+    // Check for straight flushes.
+    for suit_bitset in number_by_suit_bitset {
+        if let Some(high_card) = check_for_straight(suit_bitset) {
+            return HandEvaluation::new_straight_flush(high_card);
+        }
+    }
+
+    // Check for four of a kind.
+    for number in (Number::Two as u8..=Number::Ace as u8).rev() {
+        if count_by_number[number as usize] == 4 {
+            unsafe {
+                return HandEvaluation::new_four_of_a_kind(Number::from_u8_unchecked(number));
+            }
+        }
+    }
+
+    // Check for full house.
+    let three_of_a_kind = check_for_three_of_a_kind(&count_by_number);
+    if let Some(three_of_a_kind_number) = three_of_a_kind {
+        for number in (Number::Two as u8..=Number::Ace as u8).rev() {
+            if number != three_of_a_kind_number as u8 && count_by_number[number as usize] >= 2 {
+                unsafe {
+                    return HandEvaluation::new_full_house(
+                        three_of_a_kind_number,
+                        Number::from_u8_unchecked(number),
+                    );
+                }
+            }
+        }
+    }
+
+    // Check for flush.
+    for suit in 0..4 {
+        if count_by_suit[suit] >= 5 {
+            let high_card = highest_card_in_set(number_by_suit_bitset[suit]);
+            return HandEvaluation::new_flush(high_card);
+        }
+    }
+
+    // Check for straight.
+    if let Some(high_card) = check_for_straight(number_bitset) {
+        return HandEvaluation::new_straight(high_card);
+    }
+
+    // Check for three of a kind.
+    if let Some(high_card) = three_of_a_kind {
+        return HandEvaluation::new_three_of_a_kind(high_card);
+    }
+
+    // Check for two pair and pair.
+    if let Some(high_card) = check_for_pair(&count_by_number) {
+        for number in (Number::Two as u8..high_card as u8).rev() {
+            if count_by_number[number as usize] == 2 {
+                let low_card = unsafe { Number::from_u8_unchecked(number) };
+
+                let mut bitset = number_bitset;
+                bitset &= !high_card.as_bit();
+                bitset &= !low_card.as_bit();
+
+                let kicker = highest_card_in_set(bitset);
+                return HandEvaluation::new_two_pair(high_card, low_card, kicker);
+            }
+        }
+
+        // There is only a single pair.
+        // So, remove the bottom 2 cards from the hand and return.
+        let mut kickers = number_bitset;
+        kickers &= !high_card.as_bit();
+        kickers &= kickers - 1;
+        kickers &= kickers - 1;
+        return HandEvaluation::new_pair(high_card, kickers);
+    }
+
+    // At this point, the only thing left is a high card hand.
+    // So, remove the bottom 2 cards from the hand and return.
+    let mut five_highest_cards = number_bitset;
+    five_highest_cards &= five_highest_cards - 1;
+    five_highest_cards &= five_highest_cards - 1;
+    HandEvaluation::new_high_card(five_highest_cards)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +411,262 @@ mod tests {
         assert!(ace_ten_full_house > ace_high);
         assert!(ace_pair_ten_kicker > ace_pair_nine_kicker);
         assert!(ace_high > queen_high);
+    }
+
+    #[test]
+    fn test_straight_check() {
+        let ace_high_mask = Number::Ace.as_bit()
+            | Number::King.as_bit()
+            | Number::Queen.as_bit()
+            | Number::Jack.as_bit()
+            | Number::Ten.as_bit();
+        let five_high_mask = Number::Ace.as_bit()
+            | Number::Two.as_bit()
+            | Number::Three.as_bit()
+            | Number::Four.as_bit()
+            | Number::Five.as_bit();
+
+        assert_eq!(check_for_straight(ace_high_mask), Some(Number::Ace));
+        assert_eq!(check_for_straight(five_high_mask), Some(Number::Five));
+    }
+
+    #[test]
+    fn test_hand_evaluator() {
+        let royal_flush = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Clubs, Number::Queen),
+            Card::new(Suit::Clubs, Number::Jack),
+            Card::new(Suit::Clubs, Number::Ten),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let four_of_a_kind = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::Ten),
+            Card::new(Suit::Spades, Number::Ten),
+            Card::new(Suit::Hearts, Number::Ten),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let full_house = [
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Hearts, Number::King),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Spades, Number::Eight),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let ace_high_flush = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Clubs, Number::Queen),
+            Card::new(Suit::Clubs, Number::Jack),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let king_high_flush = [
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Clubs, Number::Queen),
+            Card::new(Suit::Clubs, Number::Jack),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let straight = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Clubs, Number::Queen),
+            Card::new(Suit::Clubs, Number::Jack),
+            Card::new(Suit::Hearts, Number::Ten),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let three_of_a_kind = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Hearts, Number::King),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Spades, Number::Eight),
+            Card::new(Suit::Hearts, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let two_pair_ace_high = [
+            Card::new(Suit::Diamonds, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::King),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Six),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+        let two_pair_queen_high = [
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::King),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Six),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+        let ace_pair = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Diamonds, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+        let ace_pair_lower_kicker = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Diamonds, Number::Ace),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+        let queen_pair = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+
+        let ace_high = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Six),
+        ];
+
+        let ace_high_slightly_lower = [
+            Card::new(Suit::Clubs, Number::Ace),
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Five),
+        ];
+
+        let king_high = [
+            Card::new(Suit::Clubs, Number::King),
+            Card::new(Suit::Diamonds, Number::Queen),
+            Card::new(Suit::Diamonds, Number::Ten),
+            Card::new(Suit::Clubs, Number::Nine),
+            Card::new(Suit::Clubs, Number::Eight),
+            Card::new(Suit::Hearts, Number::Six),
+            Card::new(Suit::Clubs, Number::Four),
+        ];
+
+        assert!(evaluate_hand(royal_flush) == HandEvaluation::new_straight_flush(Number::Ace));
+        assert!(evaluate_hand(four_of_a_kind) == HandEvaluation::new_four_of_a_kind(Number::Ten));
+        assert!(
+            evaluate_hand(full_house)
+                == HandEvaluation::new_full_house(Number::Eight, Number::King)
+        );
+        assert!(evaluate_hand(ace_high_flush) == HandEvaluation::new_flush(Number::Ace));
+        assert!(evaluate_hand(king_high_flush) == HandEvaluation::new_flush(Number::King));
+        assert!(evaluate_hand(straight) == HandEvaluation::new_straight(Number::Ace));
+        assert!(
+            evaluate_hand(three_of_a_kind) == HandEvaluation::new_three_of_a_kind(Number::Eight)
+        );
+        assert!(
+            evaluate_hand(ace_pair)
+                == HandEvaluation::new_pair(
+                    Number::Ace,
+                    Number::King.as_bit() | Number::Ten.as_bit() | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(ace_pair_lower_kicker)
+                == HandEvaluation::new_pair(
+                    Number::Ace,
+                    Number::Queen.as_bit() | Number::Ten.as_bit() | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(queen_pair)
+                == HandEvaluation::new_pair(
+                    Number::Queen,
+                    Number::Ace.as_bit() | Number::Ten.as_bit() | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(two_pair_ace_high)
+                == HandEvaluation::new_two_pair(Number::King, Number::Six, Number::Ace)
+        );
+        assert!(
+            evaluate_hand(two_pair_queen_high)
+                == HandEvaluation::new_two_pair(Number::King, Number::Six, Number::Queen)
+        );
+        assert!(
+            evaluate_hand(ace_high)
+                == HandEvaluation::new_high_card(
+                    Number::Ace.as_bit()
+                        | Number::King.as_bit()
+                        | Number::Queen.as_bit()
+                        | Number::Ten.as_bit()
+                        | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(ace_high_slightly_lower)
+                == HandEvaluation::new_high_card(
+                    Number::Ace.as_bit()
+                        | Number::King.as_bit()
+                        | Number::Queen.as_bit()
+                        | Number::Ten.as_bit()
+                        | Number::Nine.as_bit()
+                )
+        );
+        assert!(
+            evaluate_hand(king_high)
+                == HandEvaluation::new_high_card(
+                    Number::King.as_bit()
+                        | Number::Queen.as_bit()
+                        | Number::Ten.as_bit()
+                        | Number::Nine.as_bit()
+                        | Number::Eight.as_bit()
+                )
+        );
+
+        let all_hands = [
+            evaluate_hand(royal_flush),
+            evaluate_hand(four_of_a_kind),
+            evaluate_hand(full_house),
+            evaluate_hand(ace_high_flush),
+            evaluate_hand(king_high_flush),
+            evaluate_hand(straight),
+            evaluate_hand(three_of_a_kind),
+            evaluate_hand(two_pair_ace_high),
+            evaluate_hand(two_pair_queen_high),
+            evaluate_hand(ace_pair),
+            evaluate_hand(ace_pair_lower_kicker),
+            evaluate_hand(queen_pair),
+            evaluate_hand(ace_high),
+            evaluate_hand(ace_high_slightly_lower),
+            evaluate_hand(king_high),
+        ];
+        assert!((0..all_hands.len() - 1).all(|i| all_hands[i] >= all_hands[i + 1]));
     }
 }
