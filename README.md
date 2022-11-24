@@ -7,6 +7,7 @@
 ```sh
 cargo install cargo-make
 cargo install wasm-pack --features curl/static-curl
+rustup override set nightly
 ```
 
 ### Backend

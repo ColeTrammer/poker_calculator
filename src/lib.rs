@@ -1,3 +1,5 @@
+#![feature(is_sorted)]
+
 use itertools::Itertools;
 use std::fmt;
 
@@ -21,7 +23,7 @@ impl Suit {
             1 => Self::Diamonds,
             2 => Self::Clubs,
             3 => Self::Spades,
-            _ => panic!("Invalid suite number: {}", value),
+            _ => panic!("Invalid suite number: {value}"),
         }
     }
 
@@ -72,7 +74,7 @@ impl Number {
             12 => Self::Queen,
             13 => Self::King,
             14 => Self::Ace,
-            _ => panic!("Invalid card number: {}", value),
+            _ => panic!("Invalid card number: {value}"),
         }
     }
 
@@ -247,7 +249,7 @@ fn check_for_straight(mut card_bitset: u16) -> Option<Number> {
 #[must_use]
 fn check_for_three_of_a_kind(count_by_number: &[i32; 15]) -> Option<Number> {
     for number in (Number::Two as u8..=Number::Ace as u8).rev() {
-        if count_by_number[number as usize] == 3 {
+        if unsafe { *count_by_number.get_unchecked(number as usize) } == 3 {
             unsafe { return Some(Number::from_u8_unchecked(number)) }
         }
     }
@@ -257,7 +259,7 @@ fn check_for_three_of_a_kind(count_by_number: &[i32; 15]) -> Option<Number> {
 #[must_use]
 fn check_for_pair(count_by_number: &[i32; 15]) -> Option<Number> {
     for number in (Number::Two as u8..=Number::Ace as u8).rev() {
-        if count_by_number[number as usize] == 2 {
+        if unsafe { *count_by_number.get_unchecked(number as usize) } == 2 {
             unsafe { return Some(Number::from_u8_unchecked(number)) }
         }
     }
@@ -274,17 +276,17 @@ fn highest_card_in_set(cards: u16) -> Number {
 
 #[must_use]
 pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
-    let mut count_by_suit = [0, 0, 0, 0];
     let mut count_by_number = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let mut number_bitset: u16 = 0;
     let mut number_by_suit_bitset: [u16; 4] = [0, 0, 0, 0];
 
     for card in cards {
         let (suit, number) = (card.suit(), card.number());
-        count_by_suit[suit as usize] += 1;
-        count_by_number[number as usize] += 1;
-        number_bitset |= card.number().as_bit();
-        number_by_suit_bitset[suit as usize] |= card.number().as_bit();
+        unsafe {
+            *count_by_number.get_unchecked_mut(number as usize) += 1;
+            number_bitset |= card.number().as_bit();
+            *number_by_suit_bitset.get_unchecked_mut(suit as usize) |= card.number().as_bit();
+        }
     }
 
     // Check for straight flushes.
@@ -296,7 +298,7 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
 
     // Check for four of a kind.
     for number in (Number::Two as u8..=Number::Ace as u8).rev() {
-        if count_by_number[number as usize] == 4 {
+        if unsafe { *count_by_number.get_unchecked(number as usize) } == 4 {
             let high_card = unsafe { Number::from_u8_unchecked(number) };
             let kicker = highest_card_in_set(number_bitset & !high_card.as_bit());
             return HandEvaluation::new_four_of_a_kind(high_card, kicker);
@@ -307,7 +309,9 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     let three_of_a_kind = check_for_three_of_a_kind(&count_by_number);
     if let Some(three_of_a_kind_number) = three_of_a_kind {
         for number in (Number::Two as u8..=Number::Ace as u8).rev() {
-            if number != three_of_a_kind_number as u8 && count_by_number[number as usize] >= 2 {
+            if number != three_of_a_kind_number as u8
+                && unsafe { *count_by_number.get_unchecked(number as usize) } >= 2
+            {
                 unsafe {
                     return HandEvaluation::new_full_house(
                         three_of_a_kind_number,
@@ -319,12 +323,12 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     }
 
     // Check for flush.
-    for suit in 0..4 {
-        if count_by_suit[suit] >= 5 {
-            let mut suited_cards = number_by_suit_bitset[suit];
-            while count_by_suit[suit] > 5 {
+    for mut suited_cards in number_by_suit_bitset {
+        let mut count_by_suit = suited_cards.count_ones();
+        if count_by_suit >= 5 {
+            while count_by_suit > 5 {
                 suited_cards &= suited_cards - 1;
-                count_by_suit[suit] -= 1;
+                count_by_suit -= 1;
             }
             return HandEvaluation::new_flush(suited_cards);
         }
@@ -347,7 +351,7 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     // Check for two pair and pair.
     if let Some(high_card) = check_for_pair(&count_by_number) {
         for number in (Number::Two as u8..high_card as u8).rev() {
-            if count_by_number[number as usize] == 2 {
+            if unsafe { *count_by_number.get_unchecked(number as usize) } == 2 {
                 let low_card = unsafe { Number::from_u8_unchecked(number) };
 
                 let mut bitset = number_bitset;
@@ -376,50 +380,70 @@ pub fn evaluate_hand(cards: [Card; 7]) -> HandEvaluation {
     HandEvaluation::new_high_card(five_highest_cards)
 }
 
-pub struct ComputeResult {
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct EquityResult {
     pub win_count: u64,
     pub loss_count: u64,
     pub tie_count: u64,
     pub count: u64,
 }
 
+/// # Panics
+///
+/// Will panic if passed an empty slice for hands.
 #[must_use]
-pub fn compute_result(hand1: [Card; 2], hand2: [Card; 2]) -> ComputeResult {
-    let mut deck = vec![];
+pub fn compute_equity(hands: &[[Card; 2]], dead_cards: &[Card]) -> Vec<EquityResult> {
+    assert!(!hands.is_empty());
+
+    let mut deck = Vec::with_capacity(52);
     for suit in 0..4 {
         for number in Number::Two as u8..=Number::Ace as u8 {
             let card = Card::new(Suit::from_u8(suit), Number::from_u8(number));
-            if card != hand1[0] && card != hand1[1] && card != hand2[0] && card != hand2[1] {
+
+            let already_in_a_hand =
+                hands.iter().any(|hand| hand.contains(&card)) || dead_cards.contains(&card);
+            if !already_in_a_hand {
                 deck.push(card);
             }
         }
     }
 
-    let mut tie_count = 0;
-    let mut win_count = 0;
-    let mut loss_count = 0;
-    let mut count = 0;
+    let mut result = Vec::new();
+    result.resize(hands.len(), EquityResult::default());
+
+    let mut outcome_storage_per_hand = Vec::new();
+    outcome_storage_per_hand.resize(hands.len(), HandEvaluation::new_high_card(0));
 
     for (c1, c2, c3, c4, c5) in deck.into_iter().tuple_combinations() {
-        let hand_a = [c1, c2, c3, c4, c5, hand1[0], hand1[1]];
-        let hand_b = [c1, c2, c3, c4, c5, hand2[0], hand2[1]];
-
-        let a_result = evaluate_hand(hand_a);
-        let b_result = evaluate_hand(hand_b);
-        match a_result.cmp(&b_result) {
-            std::cmp::Ordering::Equal => tie_count += 1,
-            std::cmp::Ordering::Greater => win_count += 1,
-            std::cmp::Ordering::Less => loss_count += 1,
+        for (i, hand) in hands.iter().enumerate() {
+            let all_cards = [c1, c2, c3, c4, c5, hand[0], hand[1]];
+            outcome_storage_per_hand[i] = evaluate_hand(all_cards);
         }
-        count += 1;
+
+        let best_outcome = *unsafe { outcome_storage_per_hand.iter().max().unwrap_unchecked() };
+
+        let is_tie = outcome_storage_per_hand
+            .iter()
+            .filter(|outcome| **outcome == best_outcome)
+            .count()
+            > 1;
+
+        for i in 0..hands.len() {
+            let equity = &mut result[i];
+            if outcome_storage_per_hand[i] == best_outcome {
+                if is_tie {
+                    equity.tie_count += 1;
+                } else {
+                    equity.win_count += 1;
+                }
+            } else {
+                equity.loss_count += 1;
+            }
+            equity.count += 1;
+        }
     }
 
-    ComputeResult {
-        win_count,
-        loss_count,
-        tie_count,
-        count,
-    }
+    result
 }
 
 #[cfg(test)]
@@ -751,6 +775,6 @@ mod tests {
             evaluate_hand(ace_high_slightly_lower),
             evaluate_hand(king_high),
         ];
-        assert!((0..all_hands.len() - 1).all(|i| all_hands[i] >= all_hands[i + 1]));
+        assert!(!all_hands.is_sorted());
     }
 }
